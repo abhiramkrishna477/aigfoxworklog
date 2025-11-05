@@ -1,1 +1,139 @@
 
+import requests
+import json
+import time
+from datetime import datetime
+from supabase import create_client, Client
+
+# Configuration
+SUPABASE_URL = "https://jtpsnufycomhozsiegjh.supabase.co"  # Replace with your Supabase URL
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imp0cHNudWZ5Y29taG96c2llZ2poIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjE5OTI5NjAsImV4cCI6MjA3NzU2ODk2MH0.SsKcUAjkv4gsTKawOfN-KKzYRkUKoQZj-JZDo8liggc"  # Replace with your Supabase anon key
+BOT_TOKEN = "MTM3MzUyMDIxOTc0OTg3OTkzMg.Gmpdmc.WbZmHq8W44dHGuu-AeymRMLOfMoDkUzgq2GQfk"  # Replace with your bot token
+CHANNEL_ID = "1374449238469116006"  # Replace with your channel ID
+REFRESH_INTERVAL = 60  # seconds
+
+# Initialize Supabase client
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+def fetch_messages_from_discord():
+    """
+    Fetch messages from Discord channel using bot token
+    """
+    headers = {"Authorization": f"Bot {BOT_TOKEN}"}
+    messages = []
+    
+    try:
+        # Get the first batch of messages
+        response = requests.get(
+            f"https://discord.com/api/v9/channels/{CHANNEL_ID}/messages?limit=100",
+            headers=headers
+        )
+        
+        if response.status_code == 200:
+            messages = response.json()
+            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Fetched {len(messages)} messages from Discord")
+        else:
+            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Error fetching messages: {response.status_code} - {response.text}")
+    except Exception as e:
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Exception when fetching messages: {e}")
+    
+    return messages
+
+def process_message(raw_message):
+    """
+    Process a raw Discord message and convert to our format
+    """
+    try:
+        message_id = raw_message.get("id", "")
+        author = raw_message.get("author", {})
+        sender = author.get("username", "Unknown")
+        content = raw_message.get("content", "")
+        timestamp_str = raw_message.get("timestamp", "")
+        
+        # Convert Discord timestamp to datetime
+        if timestamp_str:
+            timestamp = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
+        else:
+            timestamp = datetime.now()
+        
+        return {
+            "message_id": message_id,
+            "sender": sender,
+            "content": content,
+            "timestamp": timestamp.isoformat(),
+            "raw_message": raw_message
+        }
+    except Exception as e:
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Error processing message: {e}")
+        return None
+
+def store_message_in_db(message):
+    """
+    Store a processed message in the Supabase database
+    """
+    try:
+        # Check if message already exists
+        existing = supabase.table("worklog_messages").select("id").eq("message_id", message["message_id"]).execute()
+        
+        if existing.data:
+            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Message {message['message_id']} already exists in database")
+            return False
+        
+        # Insert new message
+        result = supabase.table("worklog_messages").insert(message).execute()
+        
+        if result.data:
+            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Stored message from {message['sender']}")
+            return True
+        else:
+            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Failed to store message: {result}")
+            return False
+    except Exception as e:
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Error storing message in database: {e}")
+        return False
+
+def process_messages():
+    """
+    Process messages from Discord and store them in the database
+    """
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Fetching messages from Discord channel...")
+    raw_messages = fetch_messages_from_discord()
+    
+    if not raw_messages:
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] No messages found or error fetching messages")
+        return 0
+    
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Processing {len(raw_messages)} messages...")
+    processed_count = 0
+    
+    for raw_message in raw_messages:
+        processed_message = process_message(raw_message)
+        
+        if processed_message:
+            if store_message_in_db(processed_message):
+                processed_count += 1
+    
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Successfully processed and stored {processed_count} new messages")
+    return processed_count
+
+def main():
+    """
+    Main function to run the message processing loop
+    """
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Starting Discord message fetcher with {REFRESH_INTERVAL}s refresh interval")
+    
+    try:
+        while True:
+            process_messages()
+            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Waiting for {REFRESH_INTERVAL} seconds before next refresh...")
+            time.sleep(REFRESH_INTERVAL)
+    except KeyboardInterrupt:
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Process interrupted by user. Shutting down...")
+    except Exception as e:
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Unexpected error: {e}")
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Restarting in {REFRESH_INTERVAL} seconds...")
+        time.sleep(REFRESH_INTERVAL)
+        main()  # Restart the main function
+
+if __name__ == "__main__":
+    main()
